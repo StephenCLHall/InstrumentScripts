@@ -38,6 +38,7 @@ class SampleGenerator:
         self.valve = int(valve)
         self.hgaps = dict(hgaps)
         self.ht_block = ht_block
+        # TODO: check all new variables pulled through.
 
     def new_sample(self, title=None, subtitle=None, translation=None, height2_offset=None, phi_offset=None,
                    psi_offset=None, height_offset=None, resolution=None, footprint=None,
