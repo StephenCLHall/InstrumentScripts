@@ -25,8 +25,8 @@ class InstrumentConstant(object):
             has_height2: has a height2 stage so height 2 tracks but height doesn't
             s3_beam_blocker_offset:
             angle_for_s3_offset:
-            vslits: list of indices of vertical slits present (e.g. ["1", "2", "3"])
-            hslits: list of indices of horiztonal slits present (e.g. ["1", "2", "3"])
+            vslits: list of indices of vertical slits present (e.g. ["1", "2", "3"]). Used for setting titles.
+            hslits: list of indices of horiztonal slits present (e.g. ["1", "2", "3"]). Used for setting titles and resetting HGs after transmission.
             periods: default soft periods to reset back at run start. If none, doesn't change.
             smblock: block used as default supermirror. If None no mirror used. (e.g. "SM2")
             hgdefaults: default horizontal slit gap openings. Dict.
@@ -36,6 +36,7 @@ class InstrumentConstant(object):
             trans_offset: default height offset for transmission in mm. Positive value moves sample down.
             max_fine_trans: default maximum height offset for transmission in mm using sample-defined height. Absolute greater than this will default to "height2".
         """
+        ## TODO: these still need to be updated for beamblocker etc.
 
         s1_z = get_reflectometry_value("S1_Z")
         s2_z = get_reflectometry_value("S2_Z")
