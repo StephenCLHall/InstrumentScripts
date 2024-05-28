@@ -27,6 +27,7 @@ class _Movement(object):
 
     def __init__(self, dry_run):
         self.dry_run = dry_run
+        self.constants = get_instrument_constants()
 
     def change_to_mode_if_not_none(self, mode):
         """
@@ -154,24 +155,36 @@ class _Movement(object):
         calc_dict = self.calculate_slit_gaps(theta, sample.footprint, sample.resolution, constants)
         ## TODO: Add None handling for when s1s2 and s2sa are not properly defined.
 
-        factor = theta / constants.max_theta
-        s3 = constants.s3max * factor
-        calc_dict.update({'S3VG': s3})
+        ## TODO: New version of S3 calculation needs checking and testing.
+        # calculation of S3S based on sv1 and sv2:
+        s1s3 = constants.s1s2 + constants.s2sa + constants.s3sa
+        calc_s3s = ((calc_dict['S1VG'] + calc_dict['S2VG']) * (1 + s1s3) - calc_dict['S1VG']) * 0.5
 
-        g.cset('S3VC', 0)
-        self.wait_for_move()
+        ## TODO: setup for S3S and S3N either need new blocks on OFFSPEC or change in name here.
+        ## TODO: Need to setup the new block of S3VC_Default
+        if self._get_block_value("S3Block") == 'No':
+            calc_dict.update({'S3VG': calc_s3s*2})
+            print("S3 not in beam blocker mode")
+            calc_dict.update({'S3VC': self._get_block_value('S3VC_Default')})  # new block
+            removes = ['S3S', 'S3N']
+        else:
+            print("S3 in Beam blocker mode")
+            calc_dict.update({'S3N': constants.s3north_default, 'S3S': calc_s3s - self._get_block_value('S3VC_Default')})  ##set some defaults.
+            ## need to check which way the s3vc default is defined.
+            removes = ['S3VG', 'S3VC']
 
         if vgaps is None:
             vgaps = {}
         ## Look at inputs. Might not need to deal with None...?
         for key, value in vgaps.items():
             calc_dict.update({} if value is None else {key.upper(): value})
-
-        print("Slit gaps set to: {}".format(calc_dict))
-        for key, value in calc_dict.items():
+        calc_dict2 = {key: val for key, val in calc_dict.items() if key.upper() not in removes}
+        print("Slit gaps set to: {}".format(calc_dict2))
+        for key, value in calc_dict2.items():
             if value < 0.0:
+                ## TODO: change this error message to only be for the gap blocks.
                 sys.stderr.write("Vertical slit gaps are being set to less than 0!\n")
-        self.set_axis_dict(calc_dict)
+        self.set_axis_dict(calc_dict2)
 
     def set_axis_dict(self, axes_to_set: dict):
         """
@@ -208,6 +221,7 @@ class _Movement(object):
             print("Warning: Default instrument constants not provided. Check s1s2, s1sa distances and trans_angle.")
             return None
         else:
+            theta = abs(theta)
             s1sa = constants.s1s2 + constants.s2sa
             footprint_at_theta = footprint * sin(radians(theta))
             s1 = 2 * s1sa * tan(radians(resolution * theta)) - footprint_at_theta
@@ -309,6 +323,7 @@ class _Movement(object):
         :param smblock: block to be set. Expect 'SM2' or 'SM1' (or 'SM' for non-INTER).
         :type smblock: str
         """
+        # TODO: Might have to add in the 'fix' from INTER depending on outcome of tests.
         if smangle is not None and smblock is not None:
             is_in_beam = "IN" if smangle > 0.0001 else "OUT"
             print("{} angle (in beam?): {} ({})".format(smblock, smangle, is_in_beam))
@@ -495,7 +510,7 @@ class _Movement(object):
         print("Instrument mode set to: {}".format(mode))
         return mode
 
-    def setup_measurement(self, mode=None, periods=constants.periods):
+    def setup_measurement(self, mode=None, periods=self.constants.periods):
         """
         Sets up the general instrument settings for the measurement.
         Args:
@@ -520,8 +535,8 @@ class _Movement(object):
         print("Mode {}".format(mode_out))
         return constants, mode_out
 
-    def sample_setup(self, sample, angle, inst_constants, mode, trans_offset=0.0, smang=0.0, smblock=constants.smblock,
-                     ht_block=sample.ht_block):
+    def sample_setup(self, sample, angle, inst_constants, mode, trans_offset=0.0, smang=0.0, smblock='dummy',
+                     ht_block='dummy'):
         """
         Moves to the sample position ready for a measurement.
         Does not set slits as this is not part of sample object, but could be changed.
@@ -537,26 +552,33 @@ class _Movement(object):
             ht_block: motor to be used for height movement. If height offset greater than instrument-specific maximum height offset then height2 is used.
         """
         #TODO: check special mode label on SURF.
+
+        # overwrite to instrument constants where required:
+        # TODO: check if this is the best place:
+        htblock = ht_block if ht_block != 'dummy' else sample.ht_block
+        sm_block = smblock if sm_block != 'dummy' else constants.sm_block
+        transoffset = trans_offset if trans_offset != 0.0 else transoffset = constants.trans_offset
+
         self.set_axis("TRANS", sample.translation, constants=inst_constants)
-        smblock_out, smang_out = self._SM_setup(angle, inst_constants, smang, smblock, mode)
+        smblock_out, smang_out = self._SM_setup(angle, inst_constants, smang, sm_block, mode)
         self.set_axis("THETA", angle, constants=inst_constants)
         self.wait_for_move()
         if mode.upper() != "LIQUID":
             self.set_axis("PSI", sample.psi_offset, constants=inst_constants)
             self.set_axis("PHI", sample.phi_offset + angle, constants=inst_constants)
         if inst_constants.has_height2:
-            if angle == 0 and abs(trans_offset) > constants.max_fine_trans:  # i.e. if transmission
-                self.set_axis("HEIGHT2", sample.height2_offset - trans_offset, constants=inst_constants)
-                self.set_axis(ht_block, sample.height_offset, constants=inst_constants)
+            if angle == 0 and abs(transoffset) > constants.max_fine_trans:  # i.e. if transmission
+                self.set_axis("HEIGHT2", sample.height2_offset - transoffset, constants=inst_constants)
+                self.set_axis(htblock, sample.height_offset, constants=inst_constants)
             else:
                 self.set_axis("HEIGHT2", sample.height2_offset, constants=inst_constants)
-                self.set_axis(ht_block, sample.height_offset - trans_offset, constants=inst_constants)
+                self.set_axis(htblock, sample.height_offset - transoffset, constants=inst_constants)
         else:
-            self.set_axis(ht_block, sample.height_offset - trans_offset, constants=inst_constants)
+            self.set_axis(htblock, sample.height_offset - transoffset, constants=inst_constants)
         self.wait_for_move()
         return smblock_out, smang_out
 
-    def _SM_setup(self, angle, inst_constants, smangle=0.0, smblock=constants.smblock, mode=None):
+    def _SM_setup(self, angle, inst_constants, smangle=0.0, smblock=None, mode=None):
         """
         Setup mirrors in and out of beam and at correct angles.
         Args:
@@ -593,7 +615,7 @@ class _Movement(object):
         return smblock, smang
 
     def start_measurement(self, count_uamps: float = None, count_seconds: float = None, count_frames: float = None,
-                          osc_slit: bool = False, osc_block: str = constants.oscblock, osc_gap: float = None, vgaps: dict = None,
+                          osc_slit: bool = False, osc_block: str = 'dummy', osc_gap: float = None, vgaps: dict = None,
                           hgaps: dict = None):
         """
         Starts a measurement based on count inputs and oscillating inputs.
@@ -607,6 +629,10 @@ class _Movement(object):
             vgaps: vertical gap dict to check for osc_extent
             hgaps: horizonal gap dict to check for osc_extent
         """
+
+        # set to defaults as required - TODO: decide whether this is correct place:
+        oscblock = osc_block if osc_block != 'dummy' else constants.oscblock
+
         if count_seconds is None and count_uamps is None and count_frames is None:
             print("Setup only - no measurement")
         elif osc_slit:
@@ -614,15 +640,15 @@ class _Movement(object):
             # Otherwise carries None to osc input.
             hgaps.update(vgaps)
             try:
-                use_block = hgaps[osc_block.casefold()]
-                print('using block {}={}'.format(osc_block, use_block))
+                use_block = hgaps[oscblock.casefold()]
+                print('using block {}={}'.format(oscblock, use_block))
             except:
                 use_block = None
             # If the gap isn't specified, this is set to match the extent (i.e. not osc).
             if osc_gap is None:
                 osc_gap = use_block
-            print('Inputs: osc_block {}, osc_gap {},use_block {}'.format(osc_block, osc_gap, use_block))
-            self.count_osc_slit(osc_block, osc_gap, use_block, count_uamps, count_seconds, count_frames)
+            print('Inputs: osc_block {}, osc_gap {},use_block {}'.format(oscblock, osc_gap, use_block))
+            self.count_osc_slit(oscblock, osc_gap, use_block, count_uamps, count_seconds, count_frames)
             # TODO Add to title or leave?
         else:
             # Think this might be redundant but keep for safety.
@@ -716,36 +742,37 @@ class _Movement(object):
         print("Target for fine height axis: {} (current {})".format(target_height, current_height))
         return target_height, current_height
 
-    def set_beam_blocker(self, angle, constants, s3_beam_blocker_offset, angle_for_s3_offset, vgap):
-        '''
-        Sets up the bottom blade of slit 3 as a beam blocker to block the direct beam.
-
-        Args:
-            angle: current theta position, used for scaling the position of S3S
-            contants: Pulls in the instrument constants from constants.py
-            s3_beam_blocker_offset: The nominal offset of S3South. If None, will take value from instrument constants.
-            angle_for_s3_offset: The angle at which s3_beam_blocker_offset will block the direct beam, used for scaling the position of S3S
-                                 If None, will take value from instrument constants.
-            vgap: S3vg before S3South is moved in.
-
-        '''
-        # REVIEW: Check compatibility with other instruments
-        # TODO: Add in three S3 modes:
-        #        - normal tracking gap
-        #        - blocking direct beam (plus flare) to a certain definable extent (change this function to drive the individual blades, a la POLREF)
-        #        - lower blade only at scaling gap, top blade wide open
-        # TODO: Need two default parameters in constants.py to deal with this 'maximum s3 gap' and the original use for s3max
-        offset = s3_beam_blocker_offset if s3_beam_blocker_offset is not None else constants.s3_beam_blocker_offset
-        nominal_angle = angle_for_s3_offset if angle_for_s3_offset is not None else constants.angle_for_s3_offset
-        vgap = vgap if vgap is not None else constants.s3max
-
-        s3s_value = abs(offset * angle / nominal_angle)*(-1)
-
-        g.cset("S3VC", 0)
-        # self.wait_for_move()
-        g.waitfor_move()
-        g.cset("S3VG", vgap) # TODO: Change so directly drive S3N... g.cset('S3North', vgap / 2)
-        g.waitfor_move()
-        g.cset("S3South", s3s_value)
-
-
+    ## put alternative version above.
+    # def set_beam_blocker(self, angle, constants, s3_beam_blocker_offset, angle_for_s3_offset, vgap):
+    #     '''
+    #     Sets up the bottom blade of slit 3 as a beam blocker to block the direct beam.
+    #
+    #     Args:
+    #         angle: current theta position, used for scaling the position of S3S
+    #         contants: Pulls in the instrument constants from constants.py
+    #         s3_beam_blocker_offset: The nominal offset of S3South. If None, will take value from instrument constants.
+    #         angle_for_s3_offset: The angle at which s3_beam_blocker_offset will block the direct beam, used for scaling the position of S3S
+    #                              If None, will take value from instrument constants.
+    #         vgap: S3vg before S3South is moved in.
+    #
+    #     '''
+    #     # REVIEW: Check compatibility with other instruments
+    #     # TODO: Add in three S3 modes:
+    #     #        - normal tracking gap
+    #     #        - blocking direct beam (plus flare) to a certain definable extent (change this function to drive the individual blades, a la POLREF)
+    #     #        - lower blade only at scaling gap, top blade wide open
+    #     # TODO: Need two default parameters in constants.py to deal with this 'maximum s3 gap' and the original use for s3max
+    #     offset = s3_beam_blocker_offset if s3_beam_blocker_offset is not None else constants.s3_beam_blocker_offset
+    #     nominal_angle = angle_for_s3_offset if angle_for_s3_offset is not None else constants.angle_for_s3_offset
+    #     vgap = vgap if vgap is not None else constants.s3max
+    #
+    #     s3s_value = abs(offset * angle / nominal_angle)*(-1)
+    #
+    #     g.cset("S3VC", 0)
+    #     # self.wait_for_move()
+    #     g.waitfor_move()
+    #     g.cset("S3VG", vgap) # TODO: Change so directly drive S3N... g.cset('S3North', vgap / 2)
+    #     g.waitfor_move()
+    #     g.cset("S3South", s3s_value)
+    #
+    #
